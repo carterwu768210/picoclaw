@@ -140,6 +140,13 @@ PicoClaw can be deployed on almost any Linux device!
 
 Download the firmware for your platform from the [release](https://github.com/sipeed/picoclaw/releases) page.
 
+> [!TIP]
+> If your Linux machine is too small to install Go, use prebuilt binaries directly:
+> - `picoclaw-linux-amd64` for x86_64 Linux
+> - `picoclaw-linux-arm64` for ARM64 Linux
+>
+> Maintainers can also trigger the **linux-binaries** GitHub Actions workflow to generate downloadable artifacts (`linux-amd64`/`linux-arm64`) without creating a full release.
+
 ### Install from source (latest features, recommended for development)
 
 ```bash
