@@ -1,0 +1,51 @@
+name: linux-binaries
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goarch: [amd64, arm64]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Build linux binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          export CGO_ENABLED=0
+          export GOOS=linux
+          export GOARCH='${{ matrix.goarch }}'
+          out="dist/picoclaw-linux-${GOARCH}"
+          go build -trimpath -ldflags "-s -w" -o "$out" ./cmd/picoclaw
+          chmod +x "$out"
+          tar -C dist -czf "dist/picoclaw-linux-${GOARCH}.tar.gz" "picoclaw-linux-${GOARCH}"
+
+      - name: Upload artifact (raw binary)
+        uses: actions/upload-artifact@v4
+        with:
+          name: picoclaw-linux-${{ matrix.goarch }}
+          path: dist/picoclaw-linux-${{ matrix.goarch }}
+          if-no-files-found: error
+
+      - name: Upload artifact (tar.gz)
+        uses: actions/upload-artifact@v4
+        with:
+          name: picoclaw-linux-${{ matrix.goarch }}-tar
+          path: dist/picoclaw-linux-${{ matrix.goarch }}.tar.gz
+          if-no-files-found: error
