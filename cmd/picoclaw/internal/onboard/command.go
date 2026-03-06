@@ -6,8 +6,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
-//go:generate cp -r ../../../../workspace .
-//go:embed workspace
+//go:generate rm -rf templates/onboard_assets && mkdir -p templates/onboard_assets && cp -r ../../../../workspace/. templates/onboard_assets/
+//go:embed templates/onboard_assets
 var embeddedFiles embed.FS
 
 func NewOnboardCommand() *cobra.Command {
