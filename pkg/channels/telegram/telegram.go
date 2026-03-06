@@ -3,9 +3,11 @@ package telegram
 import (
 	"context"
 	"fmt"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -384,11 +386,12 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, message *telego.Mes
 	scope := channels.BuildMediaScope("telegram", chatIDStr, messageIDStr)
 
 	// Helper to register a local file with the media store
-	storeMedia := func(localPath, filename string) string {
+	storeMedia := func(localPath, filename, contentType string) string {
 		if store := c.GetMediaStore(); store != nil {
 			ref, err := store.Store(localPath, media.MediaMeta{
-				Filename: filename,
-				Source:   "telegram",
+				Filename:    filename,
+				ContentType: contentType,
+				Source:      "telegram",
 			}, scope)
 			if err == nil {
 				return ref
@@ -412,7 +415,7 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, message *telego.Mes
 		photo := message.Photo[len(message.Photo)-1]
 		photoPath := c.downloadPhoto(ctx, photo.FileID)
 		if photoPath != "" {
-			mediaPaths = append(mediaPaths, storeMedia(photoPath, "photo.jpg"))
+			mediaPaths = append(mediaPaths, storeMedia(photoPath, "photo.jpg", "image/jpeg"))
 			if content != "" {
 				content += "\n"
 			}
@@ -421,9 +424,10 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, message *telego.Mes
 	}
 
 	if message.Voice != nil {
-		voicePath := c.downloadFile(ctx, message.Voice.FileID, ".ogg")
+		voiceFilename := inferTelegramMediaFilename("voice", "", message.Voice.MimeType, ".ogg")
+		voicePath := c.downloadFile(ctx, message.Voice.FileID, voiceFilename)
 		if voicePath != "" {
-			mediaPaths = append(mediaPaths, storeMedia(voicePath, "voice.ogg"))
+			mediaPaths = append(mediaPaths, storeMedia(voicePath, voiceFilename, message.Voice.MimeType))
 
 			if content != "" {
 				content += "\n"
@@ -433,9 +437,15 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, message *telego.Mes
 	}
 
 	if message.Audio != nil {
-		audioPath := c.downloadFile(ctx, message.Audio.FileID, ".mp3")
+		audioFilename := inferTelegramMediaFilename(
+			"audio",
+			message.Audio.FileName,
+			message.Audio.MimeType,
+			".mp3",
+		)
+		audioPath := c.downloadFile(ctx, message.Audio.FileID, audioFilename)
 		if audioPath != "" {
-			mediaPaths = append(mediaPaths, storeMedia(audioPath, "audio.mp3"))
+			mediaPaths = append(mediaPaths, storeMedia(audioPath, audioFilename, message.Audio.MimeType))
 			if content != "" {
 				content += "\n"
 			}
@@ -444,13 +454,19 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, message *telego.Mes
 	}
 
 	if message.Document != nil {
-		docPath := c.downloadFile(ctx, message.Document.FileID, "")
+		docFilename := inferTelegramMediaFilename(
+			"document",
+			message.Document.FileName,
+			message.Document.MimeType,
+			"",
+		)
+		docPath := c.downloadFile(ctx, message.Document.FileID, docFilename)
 		if docPath != "" {
-			mediaPaths = append(mediaPaths, storeMedia(docPath, "document"))
+			mediaPaths = append(mediaPaths, storeMedia(docPath, docFilename, message.Document.MimeType))
 			if content != "" {
 				content += "\n"
 			}
-			content += "[file]"
+			content += contentTagForDocument(docFilename, message.Document.MimeType)
 		}
 	}
 
@@ -518,10 +534,10 @@ func (c *TelegramChannel) downloadPhoto(ctx context.Context, fileID string) stri
 		return ""
 	}
 
-	return c.downloadFileWithInfo(file, ".jpg")
+	return c.downloadFileWithInfo(file, "photo.jpg")
 }
 
-func (c *TelegramChannel) downloadFileWithInfo(file *telego.File, ext string) string {
+func (c *TelegramChannel) downloadFileWithInfo(file *telego.File, filename string) string {
 	if file.FilePath == "" {
 		return ""
 	}
@@ -529,14 +545,15 @@ func (c *TelegramChannel) downloadFileWithInfo(file *telego.File, ext string) st
 	url := c.bot.FileDownloadURL(file.FilePath)
 	logger.DebugCF("telegram", "File URL", map[string]any{"url": url})
 
-	// Use FilePath as filename for better identification
-	filename := file.FilePath + ext
+	if strings.TrimSpace(filename) == "" {
+		filename = filepath.Base(file.FilePath)
+	}
 	return utils.DownloadFile(url, filename, utils.DownloadOptions{
 		LoggerPrefix: "telegram",
 	})
 }
 
-func (c *TelegramChannel) downloadFile(ctx context.Context, fileID, ext string) string {
+func (c *TelegramChannel) downloadFile(ctx context.Context, fileID, filename string) string {
 	file, err := c.bot.GetFile(ctx, &telego.GetFileParams{FileID: fileID})
 	if err != nil {
 		logger.ErrorCF("telegram", "Failed to get file", map[string]any{
@@ -545,7 +562,54 @@ func (c *TelegramChannel) downloadFile(ctx context.Context, fileID, ext string) 
 		return ""
 	}
 
-	return c.downloadFileWithInfo(file, ext)
+	return c.downloadFileWithInfo(file, filename)
+}
+
+func inferTelegramMediaFilename(defaultBase, originalName, mimeType, fallbackExt string) string {
+	name := strings.TrimSpace(originalName)
+	if name == "" {
+		name = defaultBase
+	}
+
+	ext := strings.ToLower(filepath.Ext(name))
+	if ext == "" {
+		ext = extensionFromMimeType(mimeType)
+	}
+	if ext == "" {
+		ext = fallbackExt
+	}
+
+	if ext != "" && !strings.HasSuffix(strings.ToLower(name), ext) {
+		name += ext
+	}
+
+	return name
+}
+
+func extensionFromMimeType(contentType string) string {
+	base := strings.TrimSpace(strings.Split(contentType, ";")[0])
+	if base == "" {
+		return ""
+	}
+
+	exts, err := mime.ExtensionsByType(base)
+	if err != nil || len(exts) == 0 {
+		return ""
+	}
+
+	for _, ext := range exts {
+		if ext != "" {
+			return strings.ToLower(ext)
+		}
+	}
+	return ""
+}
+
+func contentTagForDocument(filename, contentType string) string {
+	if utils.IsAudioFile(filename, contentType) {
+		return "[audio]"
+	}
+	return "[file]"
 }
 
 func parseChatID(chatIDStr string) (int64, error) {
